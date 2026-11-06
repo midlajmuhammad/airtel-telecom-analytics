@@ -1,3 +1,5 @@
+
+
 -- Tool 2: Roll up first, then LEFT JOIN to keep every member
 WITH l AS (
     SELECT member_id,

@@ -8,19 +8,12 @@ from __future__ import annotations
 
 import base64
 import gzip
-import hashlib
-import hmac
 import os
-import shutil
 import sqlite3
 import tempfile
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-from zipfile import BadZipFile, ZipFile
-
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -28,6 +21,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_TABLES = {"customers", "usage_daily", "plans"}
+DRIVE_DATABASE_FILE_ID = "1fi_8yGFXAuQ1LpOTNGwsoGEi3CZd3ZFZ"
 OFFER_START = "2025-05"
 MIN_GROUP = 100
 RED = "#E4002B"
@@ -185,41 +179,43 @@ def has_tables(path: Path) -> bool:
         return False
 
 
-def save_uploaded_database(uploaded_file) -> Path | None:
-    """Extract/decompress only the Airtel database into private temp storage."""
-    destination = Path(tempfile.gettempdir()) / "airtel-cloud-upload.db"
-    temporary = destination.with_suffix(".db.part")
+def download_drive_database() -> Path | None:
+    """Download the shared Drive gzip file and validate its SQLite contents."""
+    import gdown
+
+    compressed = Path(tempfile.gettempdir()) / f"airtel-{DRIVE_DATABASE_FILE_ID}.db.gz"
+    database = Path(tempfile.gettempdir()) / f"airtel-{DRIVE_DATABASE_FILE_ID}.db"
+    if database.exists() and has_tables(database):
+        return database
+
+    partial = database.with_suffix(".db.part")
     try:
-        if uploaded_file.name.lower().endswith(".gz"):
-            source_context = gzip.GzipFile(fileobj=uploaded_file, mode="rb")
-        else:
-            archive = ZipFile(uploaded_file)
-            candidates = [
-                item for item in archive.infolist()
-                if not item.is_dir() and Path(item.filename).name.lower() == "airtel.db"
-            ]
-            if len(candidates) != 1 or candidates[0].file_size > 1024 * 1024 * 1024:
-                archive.close()
-                st.error("ZIP must contain one airtel.db file smaller than 1 GB.")
-                return None
-            source_context = archive.open(candidates[0])
-        with source_context as source, temporary.open("wb") as target:
+        result = gdown.download(id=DRIVE_DATABASE_FILE_ID, output=str(compressed), quiet=True)
+        if not result or not compressed.exists():
+            raise RuntimeError("Google Drive did not return a downloadable file")
+        with gzip.open(compressed, "rb") as source, partial.open("wb") as target:
             total = 0
             while chunk := source.read(1024 * 1024):
                 total += len(chunk)
                 if total > 1024 * 1024 * 1024:
                     raise ValueError("Expanded database exceeds the 1 GB limit")
                 target.write(chunk)
-        if not has_tables(temporary):
-            temporary.unlink(missing_ok=True)
-            st.error("The uploaded archive does not contain a valid Airtel SQLite database.")
-            return None
-        temporary.replace(destination)
-        return destination
-    except (BadZipFile, OSError, RuntimeError, ValueError, EOFError, sqlite3.Error) as exc:
-        temporary.unlink(missing_ok=True)
-        st.error(f"Could not read the uploaded database archive ({type(exc).__name__}).")
+        if not has_tables(partial):
+            raise ValueError("Decompressed file is not the expected Airtel SQLite database")
+        partial.replace(database)
+        return database
+    except Exception as exc:
+        compressed.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
+        st.error(
+            "Could not download the Airtel database from Google Drive "
+            f"({type(exc).__name__}). Set Drive General access to Anyone with the link "
+            "with Viewer permission, then reboot this app.",
+            icon=":material/error:",
+        )
         return None
+    finally:
+        compressed.unlink(missing_ok=True)
 
 
 def find_db() -> Path | None:
@@ -228,7 +224,6 @@ def find_db() -> Path | None:
         candidates.append(Path(os.environ["AIRTEL_DB"]).expanduser())
     candidates.extend(
         [
-            Path(tempfile.gettempdir()) / "airtel-cloud-upload.db",
             ROOT / "data" / "raw" / "airtel.db",
             ROOT / "data" / "airtel.db",
             ROOT / "airtel.db",
@@ -237,83 +232,20 @@ def find_db() -> Path | None:
     local_db = next((p for p in candidates if p.exists() and has_tables(p)), None)
     if local_db:
         return local_db
-
-    try:
-        db_secrets = st.secrets.get("database", {})
-    except Exception:
-        db_secrets = {}
-    database_url = db_secrets.get("url") or os.environ.get("AIRTEL_DB_URL")
-    access_token = db_secrets.get("token") or os.environ.get("AIRTEL_DB_TOKEN")
-    if not database_url:
-        return None
-    if not database_url.lower().startswith("https://"):
-        st.error("The private database URL must use HTTPS.", icon=":material/lock:")
-        return None
-
-    url_key = hashlib.sha256(database_url.encode("utf-8")).hexdigest()[:16]
-    destination = Path(tempfile.gettempdir()) / f"airtel-private-{url_key}.db"
-    if destination.exists() and has_tables(destination):
-        return destination
-
-    request_headers = {"User-Agent": "AirtelAnalyticsDashboard/1.0"}
-    if access_token:
-        request_headers["Authorization"] = f"Bearer {access_token}"
-    request = Request(database_url, headers=request_headers)
-    temporary = destination.with_suffix(".db.part")
-    try:
-        with urlopen(request, timeout=180) as response, temporary.open("wb") as output:
-            while chunk := response.read(1024 * 1024):
-                output.write(chunk)
-        if not has_tables(temporary):
-            temporary.unlink(missing_ok=True)
-            st.error(
-                "The private database URL did not return a valid Airtel SQLite database. "
-                "Check the file URL and access settings in Streamlit Cloud Secrets.",
-                icon=":material/error:",
-            )
-            return None
-        temporary.replace(destination)
-        return destination
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError, sqlite3.Error) as exc:
-        temporary.unlink(missing_ok=True)
-        st.error(
-            "Could not load the private Airtel database from its configured HTTPS source "
-            f"({type(exc).__name__}). Check the URL, token, and file permissions in "
-            "Streamlit Cloud Secrets.",
-            icon=":material/error:",
-        )
-        return None
+    return download_drive_database()
 
 
 DB_PATH = find_db()
 
 if DB_PATH is None:
     st.title("Airtel network usage")
-    st.warning("The dashboard database has not been loaded in this Streamlit Cloud instance.")
-    try:
-        upload_password = st.secrets.get("database", {}).get("upload_password", "")
-    except Exception:
-        upload_password = ""
-    if upload_password:
-        entered_password = st.text_input("Dashboard setup password", type="password")
-        if entered_password and hmac.compare_digest(entered_password, upload_password):
-            uploaded_archive = st.file_uploader(
-                "Upload the Airtel database (.gz or .zip)",
-                type=["gz", "zip"],
-                max_upload_size=200,
-            )
-            if uploaded_archive is not None:
-                DB_PATH = save_uploaded_database(uploaded_archive)
-        elif entered_password:
-            st.error("Incorrect setup password.")
-    else:
-        st.info(
-            "To load the database without opening Drive access, add an `upload_password` "
-            "under `[database]` in Streamlit Cloud Secrets, then reload this app and upload "
-            "the `.gz` or `.zip` file."
-        )
-    if DB_PATH is None:
-        st.stop()
+    st.error(
+        "The Airtel database could not be loaded from Google Drive. Confirm the file is "
+        "shared as Anyone with the link → Viewer and that its contents are a valid .gz "
+        "SQLite database, then reboot the app.",
+        icon=":material/error:",
+    )
+    st.stop()
 
 
 @st.cache_data(show_spinner=False)

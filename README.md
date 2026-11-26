@@ -42,20 +42,9 @@ The raw CSVs and `.db` files are ignored by Git. They must be supplied locally; 
 
 ## Streamlit Community Cloud database setup
 
-The database and compressed files are excluded from Git. To use the private Drive file without a Drive API or public sharing link:
+The database file stays out of Git. The app downloads the configured `.gz` file directly from Google Drive at startup, decompresses it in temporary Cloud storage, and validates the required SQLite tables before querying it. No API key or Streamlit Secrets are needed.
 
-1. Download `airtel.db.gz` from your restricted Google Drive to your computer.
-2. In Streamlit Community Cloud, open **Manage app → Settings → Secrets** and add a password you choose:
-
-   ```toml
-   [database]
-   upload_password = "CHOOSE_A_LONG_RANDOM_PASSWORD"
-   ```
-
-3. Save Secrets and reboot the app.
-4. Open the app, enter that password, and upload the `.gz` file. The uploader also accepts a ZIP containing `airtel.db`.
-
-The app decompresses the database in temporary Cloud storage, validates the SQLite tables, and reads it in read-only mode. The file stays restricted in Drive and is not committed to GitHub. Cloud temporary storage can be cleared when the app instance restarts, so upload the file again if the setup screen returns. Keep the deployed app private if the dashboard's displayed results are private too.
+In Google Drive, open the file's **Share** settings and set **General access** to **Anyone with the link — Viewer**, then reboot the Streamlit app. The app uses `gdown` to handle Drive's download and confirmation page. Anyone who obtains the link can download this file, so use this setting only for data you are comfortable sharing. Google Drive link access is not restricted to the Streamlit app.
 
 ## Metric definitions
 

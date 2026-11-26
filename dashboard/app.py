@@ -21,7 +21,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_TABLES = {"customers", "usage_daily", "plans"}
-DRIVE_DATABASE_FILE_ID = "1fi_8yGFXAuQ1LpOTNGwsoGEi3CZd3ZFZ"
+DRIVE_DATABASE_FILE_ID = "1_AZBgh-TTzE9ZW5f2nD_P1QSHKTlBFj8"
 OFFER_START = "2025-05"
 MIN_GROUP = 100
 RED = "#E4002B"

@@ -42,15 +42,21 @@ The raw CSVs and `.db` files are ignored by Git. They must be supplied locally; 
 
 ## Streamlit Community Cloud database setup
 
-The private SQLite database is deliberately excluded from Git. For a Cloud deployment, store `airtel.db` in private HTTPS object storage that can return the database file directly. In the deployed app's Streamlit workspace, open the app menu → **Settings** → **Secrets** and add:
+The SQLite database and its ZIP archive are deliberately excluded from Git. The app can load it in two ways on Community Cloud.
 
-```toml
-[database]
-url = "https://YOUR_PRIVATE_FILE_HOST/path/airtel.db"
-token = "YOUR_DOWNLOAD_TOKEN"
-```
+**Password-protected ZIP upload (no API or Drive link required):**
 
-The token is optional when the HTTPS URL is already signed. Keep the storage object private; do not use a public sharing link. Save the Secrets settings and reboot the app. The app downloads the file to its temporary Cloud storage, checks that it is a valid SQLite database containing the required tables, and then reads it in read-only mode. A signed URL may expire, so update the `url` secret when it does. Never commit the URL or token to Git.
+1. In the deployed app's Streamlit workspace, open the app menu → **Settings** → **Secrets** and add a private setup password:
+
+   ```toml
+   [database]
+   upload_password = "CHOOSE_A_LONG_RANDOM_PASSWORD"
+   ```
+
+2. Save Secrets and reboot the app.
+3. Open the app URL, enter the setup password, and upload `data/raw/airtel_database.zip`.
+
+The app extracts only `airtel.db` into temporary Cloud storage, validates the SQLite tables, and reads it in read-only mode. The database stays out of GitHub. Cloud temporary storage can be cleared when the app instance restarts, so upload the ZIP again if the setup screen returns. If you prefer a private HTTPS storage service, you can instead set `url` and an optional bearer `token` under `[database]`; never use a public file link or commit secrets to Git.
 
 ## Metric definitions
 

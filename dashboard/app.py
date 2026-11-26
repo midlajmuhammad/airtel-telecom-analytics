@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import os
+import shutil
 import sqlite3
 import tempfile
 from datetime import datetime
@@ -16,6 +18,7 @@ from html import escape
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from zipfile import BadZipFile, ZipFile
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -181,12 +184,40 @@ def has_tables(path: Path) -> bool:
         return False
 
 
+def save_uploaded_database(uploaded_file) -> Path | None:
+    """Extract only airtel.db from an authenticated ZIP into private temp storage."""
+    destination = Path(tempfile.gettempdir()) / "airtel-cloud-upload.db"
+    temporary = destination.with_suffix(".db.part")
+    try:
+        with ZipFile(uploaded_file) as archive:
+            candidates = [
+                item for item in archive.infolist()
+                if not item.is_dir() and Path(item.filename).name.lower() == "airtel.db"
+            ]
+            if len(candidates) != 1 or candidates[0].file_size > 512 * 1024 * 1024:
+                st.error("ZIP must contain one airtel.db file smaller than 512 MB.")
+                return None
+            with archive.open(candidates[0]) as source, temporary.open("wb") as target:
+                shutil.copyfileobj(source, target, length=1024 * 1024)
+        if not has_tables(temporary):
+            temporary.unlink(missing_ok=True)
+            st.error("The uploaded archive does not contain a valid Airtel SQLite database.")
+            return None
+        temporary.replace(destination)
+        return destination
+    except (BadZipFile, OSError, RuntimeError, sqlite3.Error) as exc:
+        temporary.unlink(missing_ok=True)
+        st.error(f"Could not read the uploaded database archive ({type(exc).__name__}).")
+        return None
+
+
 def find_db() -> Path | None:
     candidates = []
     if os.environ.get("AIRTEL_DB"):
         candidates.append(Path(os.environ["AIRTEL_DB"]).expanduser())
     candidates.extend(
         [
+            Path(tempfile.gettempdir()) / "airtel-cloud-upload.db",
             ROOT / "data" / "raw" / "airtel.db",
             ROOT / "data" / "airtel.db",
             ROOT / "airtel.db",
@@ -248,13 +279,29 @@ def find_db() -> Path | None:
 DB_PATH = find_db()
 
 if DB_PATH is None:
-    st.error(
-        "No usable airtel.db was found. For Streamlit Cloud, configure a private "
-        "HTTPS database URL in App settings → Secrets. Locally, place the database "
-        "in data/raw/airtel.db or set AIRTEL_DB. See README.md for setup instructions.",
-        icon=":material/error:",
-    )
-    st.stop()
+    st.title("Airtel network usage")
+    st.warning("The dashboard database has not been loaded in this Streamlit Cloud instance.")
+    try:
+        upload_password = st.secrets.get("database", {}).get("upload_password", "")
+    except Exception:
+        upload_password = ""
+    if upload_password:
+        entered_password = st.text_input("Dashboard setup password", type="password")
+        if entered_password and hmac.compare_digest(entered_password, upload_password):
+            uploaded_archive = st.file_uploader(
+                "Upload the Airtel database ZIP", type=["zip"], max_upload_size=200
+            )
+            if uploaded_archive is not None:
+                DB_PATH = save_uploaded_database(uploaded_archive)
+        elif entered_password:
+            st.error("Incorrect setup password.")
+    else:
+        st.info(
+            "In Streamlit Cloud, open App settings → Secrets and add a [database] "
+            "section with an upload_password. Then reload this page."
+        )
+    if DB_PATH is None:
+        st.stop()
 
 
 @st.cache_data(show_spinner=False)

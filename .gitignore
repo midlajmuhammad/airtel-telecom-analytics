@@ -2,6 +2,7 @@ data/raw/
 data/processed/
 *.db
 *.csv
+.streamlit/secrets.toml
 .venv/
 _pycache_/
 .ipynb_checkpoints/

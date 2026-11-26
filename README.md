@@ -40,6 +40,18 @@ In the supplied workspace, `data/airtel.db` is an empty SQLite shell; the popula
 
 The raw CSVs and `.db` files are ignored by Git. They must be supplied locally; the dashboard cannot rebuild a database without the six source CSV files. A fresh-clone setup therefore requires the dataset before step 5.
 
+## Streamlit Community Cloud database setup
+
+The private SQLite database is deliberately excluded from Git. For a Cloud deployment, store `airtel.db` in private HTTPS object storage that can return the database file directly. In the deployed app's Streamlit workspace, open the app menu → **Settings** → **Secrets** and add:
+
+```toml
+[database]
+url = "https://YOUR_PRIVATE_FILE_HOST/path/airtel.db"
+token = "YOUR_DOWNLOAD_TOKEN"
+```
+
+The token is optional when the HTTPS URL is already signed. Keep the storage object private; do not use a public sharing link. Save the Secrets settings and reboot the app. The app downloads the file to its temporary Cloud storage, checks that it is a valid SQLite database containing the required tables, and then reads it in read-only mode. A signed URL may expire, so update the `url` secret when it does. Never commit the URL or token to Git.
+
 ## Metric definitions
 
 - **Usage-day:** one subscriber with a usage record on one date. It may differ from a calendar day.

@@ -7,11 +7,15 @@ and layouts; it does not recalculate the dashboard measures.
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import sqlite3
+import tempfile
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -188,16 +192,66 @@ def find_db() -> Path | None:
             ROOT / "airtel.db",
         ]
     )
-    return next((p for p in candidates if p.exists() and has_tables(p)), None)
+    local_db = next((p for p in candidates if p.exists() and has_tables(p)), None)
+    if local_db:
+        return local_db
+
+    # Streamlit Community Cloud cannot see local files that were excluded from Git.
+    # Configure a private HTTPS download URL in App settings > Secrets instead.
+    try:
+        db_secrets = st.secrets.get("database", {})
+    except Exception:
+        db_secrets = {}
+    database_url = db_secrets.get("url") or os.environ.get("AIRTEL_DB_URL")
+    access_token = db_secrets.get("token") or os.environ.get("AIRTEL_DB_TOKEN")
+    if not database_url:
+        return None
+    if not database_url.lower().startswith("https://"):
+        st.error("The private database URL must use HTTPS.", icon=":material/lock:")
+        return None
+
+    url_key = hashlib.sha256(database_url.encode("utf-8")).hexdigest()[:16]
+    destination = Path(tempfile.gettempdir()) / f"airtel-private-{url_key}.db"
+    if destination.exists() and has_tables(destination):
+        return destination
+
+    request_headers = {"User-Agent": "AirtelAnalyticsDashboard/1.0"}
+    if access_token:
+        request_headers["Authorization"] = f"Bearer {access_token}"
+    request = Request(database_url, headers=request_headers)
+    temporary = destination.with_suffix(".db.part")
+    try:
+        with urlopen(request, timeout=180) as response, temporary.open("wb") as output:
+            while chunk := response.read(1024 * 1024):
+                output.write(chunk)
+        if not has_tables(temporary):
+            temporary.unlink(missing_ok=True)
+            st.error(
+                "The private database URL did not return a valid Airtel SQLite database. "
+                "Check the file URL and access settings in Streamlit Cloud Secrets.",
+                icon=":material/error:",
+            )
+            return None
+        temporary.replace(destination)
+        return destination
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError, sqlite3.Error) as exc:
+        temporary.unlink(missing_ok=True)
+        st.error(
+            "Could not load the private Airtel database from its configured HTTPS source "
+            f"({type(exc).__name__}). Check the URL, token, and file permissions in "
+            "Streamlit Cloud Secrets.",
+            icon=":material/error:",
+        )
+        return None
 
 
 DB_PATH = find_db()
 
 if DB_PATH is None:
     st.error(
-        "No usable airtel.db was found. Put the six source CSV files in "
-        "data/raw/ and run python scripts/build_db.py, or set AIRTEL_DB. "
-        "See README.md for setup instructions.",
+        "No usable airtel.db was found. For Streamlit Cloud, configure a private "
+        "HTTPS database URL in App settings → Secrets. Locally, place the database "
+        "in data/raw/airtel.db or set AIRTEL_DB. See README.md for setup instructions.",
         icon=":material/error:",
     )
     st.stop()

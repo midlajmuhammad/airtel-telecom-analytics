@@ -40,38 +40,22 @@ In the supplied workspace, `data/airtel.db` is an empty SQLite shell; the popula
 
 The raw CSVs and `.db` files are ignored by Git. They must be supplied locally; the dashboard cannot rebuild a database without the six source CSV files. A fresh-clone setup therefore requires the dataset before step 5.
 
-## Streamlit Community Cloud private Google Drive setup
+## Streamlit Community Cloud database setup
 
-The database and its compressed archive are excluded from Git. To load the restricted `.gz` file from Google Drive:
+The database and compressed files are excluded from Git. To use the private Drive file without a Drive API or public sharing link:
 
-1. In Google Cloud Console, create/select a project and enable **Google Drive API**.
-2. Create a service account and download its JSON key. Share only the `.gz` Drive file with the service account's `client_email` as **Viewer**. Keep the file restricted; do not use “Anyone with the link.”
-3. In Streamlit Community Cloud, open the app's **Manage app → Settings → Secrets** and add the service-account fields from the downloaded JSON key. The current Drive file ID is configured in the app; it can be overridden in Secrets if needed. Paste the private key only into Secrets; never commit it to Git.
+1. Download `airtel.db.gz` from your restricted Google Drive to your computer.
+2. In Streamlit Community Cloud, open **Manage app → Settings → Secrets** and add a password you choose:
 
    ```toml
    [database]
-   drive_file_id = "GOOGLE_DRIVE_FILE_ID"
-
-   [database.service_account]
-   type = "service_account"
-   project_id = "YOUR_GOOGLE_CLOUD_PROJECT_ID"
-   private_key_id = "KEY_ID_FROM_SERVICE_ACCOUNT_JSON"
-   private_key = """-----BEGIN PRIVATE KEY-----
-   PASTE_PRIVATE_KEY_BODY_HERE
-   -----END PRIVATE KEY-----
-   """
-   client_email = "YOUR_SERVICE_ACCOUNT_EMAIL"
-   client_id = "CLIENT_ID_FROM_SERVICE_ACCOUNT_JSON"
-   auth_uri = "https://accounts.google.com/o/oauth2/auth"
-   token_uri = "https://oauth2.googleapis.com/token"
-   auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-   client_x509_cert_url = "SERVICE_ACCOUNT_CERT_URL_FROM_JSON"
-   universe_domain = "googleapis.com"
+   upload_password = "CHOOSE_A_LONG_RANDOM_PASSWORD"
    ```
 
-4. Save Secrets and reboot the app. The app authenticates with read-only Drive scope, downloads the restricted file with Drive API `files.get` media download, decompresses the gzip stream into temporary Cloud storage, and validates the required SQLite tables before querying it.
+3. Save Secrets and reboot the app.
+4. Open the app, enter that password, and upload the `.gz` file. The uploader also accepts a ZIP containing `airtel.db`.
 
-The local `.streamlit/secrets.toml`, service-account JSON key, `.db`, `.gz`, and ZIP files must remain untracked. Temporary Cloud storage may be cleared after an instance restart, in which case the app downloads the Drive file again. If you choose the manual ZIP fallback instead, set `[database] upload_password` in Secrets and use the protected uploader. Keep the deployed app private if the dashboard's displayed results are private too.
+The app decompresses the database in temporary Cloud storage, validates the SQLite tables, and reads it in read-only mode. The file stays restricted in Drive and is not committed to GitHub. Cloud temporary storage can be cleared when the app instance restarts, so upload the file again if the setup screen returns. Keep the deployed app private if the dashboard's displayed results are private too.
 
 ## Metric definitions
 

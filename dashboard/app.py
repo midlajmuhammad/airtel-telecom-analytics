@@ -28,7 +28,6 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_TABLES = {"customers", "usage_daily", "plans"}
-DRIVE_DATABASE_FILE_ID = "1fi_8yGFXAuQ1LpOTNGwsoGEi3CZd3ZFZ"
 OFFER_START = "2025-05"
 MIN_GROUP = 100
 RED = "#E4002B"
@@ -187,90 +186,40 @@ def has_tables(path: Path) -> bool:
 
 
 def save_uploaded_database(uploaded_file) -> Path | None:
-    """Extract only airtel.db from an authenticated ZIP into private temp storage."""
+    """Extract/decompress only the Airtel database into private temp storage."""
     destination = Path(tempfile.gettempdir()) / "airtel-cloud-upload.db"
     temporary = destination.with_suffix(".db.part")
     try:
-        with ZipFile(uploaded_file) as archive:
+        if uploaded_file.name.lower().endswith(".gz"):
+            source_context = gzip.GzipFile(fileobj=uploaded_file, mode="rb")
+        else:
+            archive = ZipFile(uploaded_file)
             candidates = [
                 item for item in archive.infolist()
                 if not item.is_dir() and Path(item.filename).name.lower() == "airtel.db"
             ]
-            if len(candidates) != 1 or candidates[0].file_size > 512 * 1024 * 1024:
-                st.error("ZIP must contain one airtel.db file smaller than 512 MB.")
+            if len(candidates) != 1 or candidates[0].file_size > 1024 * 1024 * 1024:
+                archive.close()
+                st.error("ZIP must contain one airtel.db file smaller than 1 GB.")
                 return None
-            with archive.open(candidates[0]) as source, temporary.open("wb") as target:
-                shutil.copyfileobj(source, target, length=1024 * 1024)
-        if not has_tables(temporary):
-            temporary.unlink(missing_ok=True)
-            st.error("The uploaded archive does not contain a valid Airtel SQLite database.")
-            return None
-        temporary.replace(destination)
-        return destination
-    except (BadZipFile, OSError, RuntimeError, sqlite3.Error) as exc:
-        temporary.unlink(missing_ok=True)
-        st.error(f"Could not read the uploaded database archive ({type(exc).__name__}).")
-        return None
-
-
-def download_drive_database(file_id: str, service_account_info: dict) -> Path | None:
-    """Fetch a restricted Drive .gz file with read-only service-account access."""
-    from google.auth.transport.requests import AuthorizedSession
-    from google.oauth2.service_account import Credentials
-
-    cache_key = hashlib.sha256(file_id.encode("utf-8")).hexdigest()[:16]
-    database_path = Path(tempfile.gettempdir()) / f"airtel-drive-{cache_key}.db"
-    if database_path.exists() and has_tables(database_path):
-        return database_path
-
-    compressed_path = database_path.with_suffix(".db.gz.part")
-    expanded_path = database_path.with_suffix(".db.part")
-    try:
-        credentials = Credentials.from_service_account_info(
-            dict(service_account_info),
-            scopes=["https://www.googleapis.com/auth/drive.readonly"],
-        )
-        session = AuthorizedSession(credentials)
-        download_url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
-        with session.get(
-            download_url,
-            params={"alt": "media"},
-            stream=True,
-            timeout=(20, 180),
-        ) as response:
-            response.raise_for_status()
-            with compressed_path.open("wb") as output:
-                total = 0
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        total += len(chunk)
-                        if total > 512 * 1024 * 1024:
-                            raise ValueError("Compressed database exceeds the 512 MB limit")
-                        output.write(chunk)
-
-        with gzip.open(compressed_path, "rb") as source, expanded_path.open("wb") as target:
+            source_context = archive.open(candidates[0])
+        with source_context as source, temporary.open("wb") as target:
             total = 0
             while chunk := source.read(1024 * 1024):
                 total += len(chunk)
                 if total > 1024 * 1024 * 1024:
                     raise ValueError("Expanded database exceeds the 1 GB limit")
                 target.write(chunk)
-        if not has_tables(expanded_path):
-            raise ValueError("Downloaded file is not the expected Airtel SQLite database")
-        expanded_path.replace(database_path)
-        return database_path
-    except Exception as exc:
-        compressed_path.unlink(missing_ok=True)
-        expanded_path.unlink(missing_ok=True)
-        st.error(
-            "Could not download and validate the restricted Google Drive database "
-            f"({type(exc).__name__}). Check the file ID, service-account Secrets, "
-            "and that the Drive file is shared with the service-account email.",
-            icon=":material/error:",
-        )
+        if not has_tables(temporary):
+            temporary.unlink(missing_ok=True)
+            st.error("The uploaded archive does not contain a valid Airtel SQLite database.")
+            return None
+        temporary.replace(destination)
+        return destination
+    except (BadZipFile, OSError, RuntimeError, ValueError, EOFError, sqlite3.Error) as exc:
+        temporary.unlink(missing_ok=True)
+        st.error(f"Could not read the uploaded database archive ({type(exc).__name__}).")
         return None
-    finally:
-        compressed_path.unlink(missing_ok=True)
 
 
 def find_db() -> Path | None:
@@ -289,18 +238,10 @@ def find_db() -> Path | None:
     if local_db:
         return local_db
 
-    # Streamlit Cloud secrets provide credentials for the restricted Drive file.
     try:
         db_secrets = st.secrets.get("database", {})
     except Exception:
         db_secrets = {}
-    drive_file_id = db_secrets.get("drive_file_id") or DRIVE_DATABASE_FILE_ID
-    service_account_info = db_secrets.get("service_account")
-    if drive_file_id and service_account_info:
-        drive_db = download_drive_database(drive_file_id, service_account_info)
-        if drive_db:
-            return drive_db
-
     database_url = db_secrets.get("url") or os.environ.get("AIRTEL_DB_URL")
     access_token = db_secrets.get("token") or os.environ.get("AIRTEL_DB_TOKEN")
     if not database_url:
@@ -357,7 +298,9 @@ if DB_PATH is None:
         entered_password = st.text_input("Dashboard setup password", type="password")
         if entered_password and hmac.compare_digest(entered_password, upload_password):
             uploaded_archive = st.file_uploader(
-                "Upload the Airtel database ZIP", type=["zip"], max_upload_size=200
+                "Upload the Airtel database (.gz or .zip)",
+                type=["gz", "zip"],
+                max_upload_size=200,
             )
             if uploaded_archive is not None:
                 DB_PATH = save_uploaded_database(uploaded_archive)
@@ -365,10 +308,9 @@ if DB_PATH is None:
             st.error("Incorrect setup password.")
     else:
         st.info(
-            "For private Google Drive loading, configure `service_account` under "
-            "Streamlit Cloud Secrets and share the restricted database file with "
-            "that service account as Viewer, then reboot this app. "
-            "Alternatively, add `upload_password` to enable the protected ZIP uploader."
+            "To load the database without opening Drive access, add an `upload_password` "
+            "under `[database]` in Streamlit Cloud Secrets, then reload this app and upload "
+            "the `.gz` or `.zip` file."
         )
     if DB_PATH is None:
         st.stop()

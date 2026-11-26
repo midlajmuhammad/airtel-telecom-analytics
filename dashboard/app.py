@@ -7,6 +7,7 @@ and layouts; it does not recalculate the dashboard measures.
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import hmac
 import os
@@ -211,6 +212,66 @@ def save_uploaded_database(uploaded_file) -> Path | None:
         return None
 
 
+def download_drive_database(file_id: str, service_account_info: dict) -> Path | None:
+    """Fetch a restricted Drive .gz file with read-only service-account access."""
+    from google.auth.transport.requests import AuthorizedSession
+    from google.oauth2.service_account import Credentials
+
+    cache_key = hashlib.sha256(file_id.encode("utf-8")).hexdigest()[:16]
+    database_path = Path(tempfile.gettempdir()) / f"airtel-drive-{cache_key}.db"
+    if database_path.exists() and has_tables(database_path):
+        return database_path
+
+    compressed_path = database_path.with_suffix(".db.gz.part")
+    expanded_path = database_path.with_suffix(".db.part")
+    try:
+        credentials = Credentials.from_service_account_info(
+            dict(service_account_info),
+            scopes=["https://www.googleapis.com/auth/drive.readonly"],
+        )
+        session = AuthorizedSession(credentials)
+        download_url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
+        with session.get(
+            download_url,
+            params={"alt": "media"},
+            stream=True,
+            timeout=(20, 180),
+        ) as response:
+            response.raise_for_status()
+            with compressed_path.open("wb") as output:
+                total = 0
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        total += len(chunk)
+                        if total > 512 * 1024 * 1024:
+                            raise ValueError("Compressed database exceeds the 512 MB limit")
+                        output.write(chunk)
+
+        with gzip.open(compressed_path, "rb") as source, expanded_path.open("wb") as target:
+            total = 0
+            while chunk := source.read(1024 * 1024):
+                total += len(chunk)
+                if total > 1024 * 1024 * 1024:
+                    raise ValueError("Expanded database exceeds the 1 GB limit")
+                target.write(chunk)
+        if not has_tables(expanded_path):
+            raise ValueError("Downloaded file is not the expected Airtel SQLite database")
+        expanded_path.replace(database_path)
+        return database_path
+    except Exception as exc:
+        compressed_path.unlink(missing_ok=True)
+        expanded_path.unlink(missing_ok=True)
+        st.error(
+            "Could not download and validate the restricted Google Drive database "
+            f"({type(exc).__name__}). Check the file ID, service-account Secrets, "
+            "and that the Drive file is shared with the service-account email.",
+            icon=":material/error:",
+        )
+        return None
+    finally:
+        compressed_path.unlink(missing_ok=True)
+
+
 def find_db() -> Path | None:
     candidates = []
     if os.environ.get("AIRTEL_DB"):
@@ -227,12 +288,18 @@ def find_db() -> Path | None:
     if local_db:
         return local_db
 
-    # Streamlit Community Cloud cannot see local files that were excluded from Git.
-    # Configure a private HTTPS download URL in App settings > Secrets instead.
+    # Streamlit Cloud secrets provide credentials for the restricted Drive file.
     try:
         db_secrets = st.secrets.get("database", {})
     except Exception:
         db_secrets = {}
+    drive_file_id = db_secrets.get("drive_file_id")
+    service_account_info = db_secrets.get("service_account")
+    if drive_file_id and service_account_info:
+        drive_db = download_drive_database(drive_file_id, service_account_info)
+        if drive_db:
+            return drive_db
+
     database_url = db_secrets.get("url") or os.environ.get("AIRTEL_DB_URL")
     access_token = db_secrets.get("token") or os.environ.get("AIRTEL_DB_TOKEN")
     if not database_url:
@@ -297,8 +364,9 @@ if DB_PATH is None:
             st.error("Incorrect setup password.")
     else:
         st.info(
-            "In Streamlit Cloud, open App settings → Secrets and add a [database] "
-            "section with an upload_password. Then reload this page."
+            "For private Google Drive loading, configure `drive_file_id` and "
+            "`service_account` under Streamlit Cloud Secrets, then reboot this app. "
+            "Alternatively, add `upload_password` to enable the protected ZIP uploader."
         )
     if DB_PATH is None:
         st.stop()

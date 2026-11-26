@@ -28,6 +28,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_TABLES = {"customers", "usage_daily", "plans"}
+DRIVE_DATABASE_FILE_ID = "1fi_8yGFXAuQ1LpOTNGwsoGEi3CZd3ZFZ"
 OFFER_START = "2025-05"
 MIN_GROUP = 100
 RED = "#E4002B"
@@ -293,7 +294,7 @@ def find_db() -> Path | None:
         db_secrets = st.secrets.get("database", {})
     except Exception:
         db_secrets = {}
-    drive_file_id = db_secrets.get("drive_file_id")
+    drive_file_id = db_secrets.get("drive_file_id") or DRIVE_DATABASE_FILE_ID
     service_account_info = db_secrets.get("service_account")
     if drive_file_id and service_account_info:
         drive_db = download_drive_database(drive_file_id, service_account_info)
@@ -364,8 +365,9 @@ if DB_PATH is None:
             st.error("Incorrect setup password.")
     else:
         st.info(
-            "For private Google Drive loading, configure `drive_file_id` and "
-            "`service_account` under Streamlit Cloud Secrets, then reboot this app. "
+            "For private Google Drive loading, configure `service_account` under "
+            "Streamlit Cloud Secrets and share the restricted database file with "
+            "that service account as Viewer, then reboot this app. "
             "Alternatively, add `upload_password` to enable the protected ZIP uploader."
         )
     if DB_PATH is None:

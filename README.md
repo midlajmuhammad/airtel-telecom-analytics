@@ -46,7 +46,7 @@ The database and its compressed archive are excluded from Git. To load the restr
 
 1. In Google Cloud Console, create/select a project and enable **Google Drive API**.
 2. Create a service account and download its JSON key. Share only the `.gz` Drive file with the service account's `client_email` as **Viewer**. Keep the file restricted; do not use “Anyone with the link.”
-3. In Streamlit Community Cloud, open the app's **Manage app → Settings → Secrets** and add the Drive file ID and service-account fields from the downloaded JSON key. Paste the private key only into Secrets; never commit it to Git.
+3. In Streamlit Community Cloud, open the app's **Manage app → Settings → Secrets** and add the service-account fields from the downloaded JSON key. The current Drive file ID is configured in the app; it can be overridden in Secrets if needed. Paste the private key only into Secrets; never commit it to Git.
 
    ```toml
    [database]

@@ -181,8 +181,6 @@ def has_tables(path: Path) -> bool:
 
 def download_drive_database() -> Path | None:
     """Download the shared Drive gzip file and validate its SQLite contents."""
-    import gdown
-
     compressed = Path(tempfile.gettempdir()) / f"airtel-{DRIVE_DATABASE_FILE_ID}.db.gz"
     database = Path(tempfile.gettempdir()) / f"airtel-{DRIVE_DATABASE_FILE_ID}.db"
     if database.exists() and has_tables(database):
@@ -190,9 +188,11 @@ def download_drive_database() -> Path | None:
 
     partial = database.with_suffix(".db.part")
     try:
+        import gdown
+
         result = gdown.download(id=DRIVE_DATABASE_FILE_ID, output=str(compressed), quiet=True)
         if not result or not compressed.exists():
-            raise RuntimeError("Google Drive did not return a downloadable file")
+            raise ValueError("Google Drive returned no file; check the link-sharing permission")
         with gzip.open(compressed, "rb") as source, partial.open("wb") as target:
             total = 0
             while chunk := source.read(1024 * 1024):
@@ -207,10 +207,11 @@ def download_drive_database() -> Path | None:
     except Exception as exc:
         compressed.unlink(missing_ok=True)
         partial.unlink(missing_ok=True)
+        reason = (str(exc) or type(exc).__name__).replace(DRIVE_DATABASE_FILE_ID, "[Drive file ID]")[:240]
         st.error(
-            "Could not download the Airtel database from Google Drive "
-            f"({type(exc).__name__}). Set Drive General access to Anyone with the link "
-            "with Viewer permission, then reboot this app.",
+            f"Google Drive database loading failed: {reason}. Set General access to "
+            "Anyone with the link → Viewer, ensure the file is a valid .gz database, "
+            "and reboot the app.",
             icon=":material/error:",
         )
         return None
@@ -239,12 +240,6 @@ DB_PATH = find_db()
 
 if DB_PATH is None:
     st.title("Airtel network usage")
-    st.error(
-        "The Airtel database could not be loaded from Google Drive. Confirm the file is "
-        "shared as Anyone with the link → Viewer and that its contents are a valid .gz "
-        "SQLite database, then reboot the app.",
-        icon=":material/error:",
-    )
     st.stop()
 
 
